@@ -12,7 +12,8 @@ matplotlib == 3.4.3
 mujoco >= 2.2.2
 moviepy >= 1.0.3
 imageio >= 2.21.3
-d4rl >= 1.1
+# d4rl >= 1.1 not required for deepsea
 plotly >= 5.10.0
 pandas >= 2.1.0
 distrax >= 0.1.4
+gymnax >= 0.0.6

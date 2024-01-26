@@ -4,7 +4,7 @@ This is code to accompany the NeurIPS 2023 paper [Accelerating Exploration with 
 
 The code is built off from https://github.com/ikostrikov/rlpd/ and the ICVF implementation is from https://github.com/dibyaghosh/icvf_release/.
 
-ExPLORe is licensed under CC-BY-NC, however portions of the project (indicated by the header in each file influenced) are available under separate license terms: 
+ExPLORe is licensed under CC-BY-NC, however portions of the project (indicated by the header in each file influenced) are available under separate license terms:
 - rlpd (https://github.com/ikostrikov/) is licensed under the MIT license.
 - icvf (https://github.com/dibyaghosh/icvf_release) is licensed under the MIT license.
 
@@ -82,7 +82,7 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false python train_finetuning.py \
 ```
 
 ## COG
-Based on https://github.com/avisingh599/cog. 
+Based on https://github.com/avisingh599/cog.
 
 First, install roboverse for COG: https://github.com/avisingh599/roboverse, for the environment. Follow the instructions in `data/README.md` to obtain the dataset.
 
@@ -102,9 +102,11 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false python train_finetuning_pixels.py \
 `./generate_all.sh [partition] [conda environment] [resource constraint]` will generate all the sbatch scripts (with three seeds. The paper uses 10 for AntMaze and Adroit, 20 for COG) under `sbatch/` and `./submit_all.sh` will launch all of them.
 
 ### To reproduce main figures in the paper
-Assuming that all the experiments above completed successfully with wandb tracking. The following steps can be followed to generate paper-style figures. 
+Assuming that all the experiments above completed successfully with wandb tracking. The following steps can be followed to generate paper-style figures.
 ```
 cd plotting
+python wandb_dl.py --entity=vc-keertana --domain=deepsea --project_name=deepsea_explore
+
 python wandb_dl.py --entity=[YOUR WANDB ENTITY/USERNAME] --domain=antmaze --project_name=release-explore-antmaze
 python wandb_dl.py --entity=[YOUR WANDB ENTITY/USERNAME] --domain=adroit --project_name=release-explore-adroit
 python wandb_dl.py --entity=[YOUR WANDB ENTITY/USERNAME] --domain=cog --project_name=release-explore-cog

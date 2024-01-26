@@ -10,21 +10,21 @@ from itertools import chain
 
 import numpy as np
 
-def config_match(conf_src, conf_tgt):
-    for k, v in conf_tgt.items():
-        if v == "null":
-            if k not in conf_src: 
-                print("skipping", k)
-                continue
-        
-        if k not in conf_src: return False
-        if type(v) == tuple:
-            min_v, max_v = v
-            if conf_src[k] >= max_v: return False
-            if conf_src[k] <= min_v: return False
-        else:
-            if conf_src[k] != v: return False
-    return True
+# def config_match(conf_src, conf_tgt):
+#     for k, v in conf_tgt.items():
+#         if v == "null":
+#             if k not in conf_src:
+#                 print("skipping", k)
+#                 continue
+#
+#         if k not in conf_src: return False
+#         if type(v) == tuple:
+#             min_v, max_v = v
+#             if conf_src[k] >= max_v: return False
+#             if conf_src[k] <= min_v: return False
+#         else:
+#             if conf_src[k] != v: return False
+#     return True
 
 
 def normalize_performance(x, env_name):
@@ -49,7 +49,7 @@ def filter(data, conf):
     else:
         iters = data._runs
     for index, run in enumerate(iters):
-        if config_match(run["config"], conf):
+        # if config_match(run["config"], conf):
             matched_runs.append(run)
             indices.append(index)
     return matched_runs, indices
@@ -59,21 +59,26 @@ def interp(x1, x2, y1, y2, x):
     dx = x2 - x1
     return (x - x1) / dx * dy + y1
 
-def get_runs_with_metrics(data, conf, step_metric, value_metric, anc_steps, min_length_v=30, num_seeds=20, patch_name="arxiv-patch", extra_args="", is_pixel=False):
+def get_runs_with_metrics(
+    data, conf, step_metric= "env_step", value_metric="evaluation/return",
+    anc_steps =np.linspace(50, 2000, 100),
+    min_length_v=30, num_seeds=20, patch_name="arxiv-patch",
+    extra_args="", is_pixel=False
+    ):
     metric_list = []
     runs, indices = filter(data, conf)
     min_length = None
-    
+
     ids = []
     seeds = set()
     for run, idt in zip(runs, indices):
 
         if value_metric not in run: continue
         if step_metric not in run: continue
-        
+
         steps_rs, steps = run[step_metric]
         values_rs, values = run[value_metric]
-    
+
         env_steps = []
         step_index = 0
         failed = False
@@ -102,28 +107,28 @@ def get_runs_with_metrics(data, conf, step_metric, value_metric, anc_steps, min_
                 adjusted_values.append(values[step_index])
             else:
                 adjusted_values.append(interp(
-                    env_steps[step_index - 1], env_steps[step_index], 
+                    env_steps[step_index - 1], env_steps[step_index],
                     values[step_index - 1], values[step_index],
                     anc_step,
                 ))
         if failed: continue
-                
+
         if len(adjusted_values) < min_length_v:
             continue
-            
+
         seed = run["config"]["seed"]
         if seed in seeds:
             continue
         seeds.add(seed)
-        
+
         metric_list.append(adjusted_values)
 
         if min_length is None or min_length > len(adjusted_values):
             min_length = len(adjusted_values)
-    
+
     if len(metric_list) == 0:
         return None
-    
+
     additional_str = ""
     for k, v in conf.items():
         additional_str += f" --{k}={v}"

@@ -7,7 +7,7 @@
 
 
 import pickle as pkl
-import pandas as pd 
+import pandas as pd
 import matplotlib.pyplot as plt
 from collections import defaultdict
 import wandb
@@ -38,11 +38,11 @@ def parse(config_str):
     config = {}
     while True:
         config_str_nxt = find_next_hp(config_str)
-        
+
         curr_seg = config_str[:len(config_str)-len(config_str_nxt)]
         k, v = curr_seg.split(": ")
         config[k] = v[:-1]
-        
+
         if config_str_nxt == "":
             break
         config_str = config_str_nxt
@@ -57,14 +57,14 @@ def post_process(config):
             for kk, vv in parse(v).items():
                 ak = k + "." + kk
                 config[ak] = vv
-    
+
     return config
 
 
 def save(path, data):
     with open(path, 'wb') as f:
         pkl.dump(data, f)
-        
+
 def load(path):
     with open(path, 'rb') as f:
         return pkl.load(f)
@@ -74,10 +74,10 @@ class Data:
         self._runs = []
         self.keys = keys
         self.entity = entity
-        
+
         for proj_name in proj_names:
             self._collect(proj_name)
-        
+
     def _collect(self, proj_name):
         runs = api.runs(f"{self.entity}/{proj_name}")
         for run in tqdm.tqdm(runs):
@@ -87,12 +87,12 @@ class Data:
             for key in self.keys:
                 df = run.history(keys=[key])
                 if len(df.columns) == 0: continue
-                
+
                 steps = df[df.columns[0]].to_numpy()
                 values = df[key].to_numpy()
                 entry[key] = (steps, values)
             self._runs.append(entry)
-            
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(
@@ -101,14 +101,14 @@ if __name__ == '__main__':
     )
 
     parser.add_argument('--entity', type=str)
-    parser.add_argument('--project_name', type=str) 
-    parser.add_argument('--domain', type=str, help="one of [antmaze, adroit, cog]") 
+    parser.add_argument('--project_name', type=str)
+    parser.add_argument('--domain', type=str, help="one of [deepsea, antmaze, adroit, cog]")
     args = parser.parse_args()
 
-    assert args.domain in ["antmaze", "adroit", "cog"]
+    assert args.domain in ["antmaze", "adroit", "cog", "deepsea"]
     keys = ["env_step", "evaluation/return"]
-    if args.domain == "antmaze":
-        keys.append("coverage")
+    # if args.domain == "antmaze":
+    #     keys.append("coverage")
     data = Data([args.project_name], keys=keys, entity=args.entity)
     os.makedirs('data', exist_ok=True)
     with open(f'data/{args.domain}.pkl', 'wb') as handle:

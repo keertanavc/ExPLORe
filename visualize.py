@@ -39,7 +39,7 @@ from functools import partial
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 import gym
-import d4rl
+#import d4rl
 import numpy as np
 import functools as ft
 import math

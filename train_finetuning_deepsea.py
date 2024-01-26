@@ -30,110 +30,79 @@ SOFTWARE.
 
 #! /usr/bin/env python
 import os
+import sys
 import pickle
 from functools import partial
-
 import jax
-
 import gym
 from gym import spaces
+import gymnax
+from gymnax.environments import spaces # not exactly the same as gym.spaces
 import numpy as np
 import tqdm
 from absl import app, flags
 from flax.core import frozen_dict
 from absl import logging
-
 import jax.numpy as jnp
-
 logging.set_verbosity(logging.FATAL)
-
-try:
-    from flax.training import checkpoints
-except:
-    print("Not loading checkpointing functionality.")
+from flax.training import checkpoints
 from ml_collections import config_flags
-
 from rlpd.agents import SACLearner, RM, RND, BCAgent
-
 from rlpd.data import ReplayBuffer, Dataset
-from rlpd.data.d4rl_datasets import D4RLDataset, filter_antmaze
-
-try:
-    from rlpd.data.binary_datasets import BinaryDataset
-except:
-    print("not importing binary dataset")
 from rlpd.wrappers import wrap_gym
-
+from rlpd.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from rlpd.evaluation import evaluate
-
-### logging imports ###
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import plotly.express as px
-from visualize import plot_value, plot_trajectories, plot_points, plot_data_directions
-from visualize import get_canvas_image
 import wandb
-
 import glob
 import os
 import time
 from datetime import datetime
 
-from absl import app, flags
-from functools import partial
-import jax
-import jax.numpy as jnp
-import flax
-
-import tqdm
-import wandb
-
-from ml_collections import config_flags
-import pickle
+#from rlpd.data.d4rl_datasets import D4RLDataset, filter_antmaze
+#from rlpd.data.binary_datasets import BinaryDataset
+from rlpd.data.deepsea_datasets import DeepSeaDataset
+#from envs import DeepSea
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string("project_name", "rlpd", "wandb project name.")
-flags.DEFINE_string("env_name", "halfcheetah-expert-v2", "D4rl dataset name.")
+flags.DEFINE_string("project_name", "deepsea_explore", "wandb project name.")
+flags.DEFINE_string("env_name", "DeepSea-bsuite", "Deep sea behavior suite")
 flags.DEFINE_float("offline_ratio", 0.5, "Offline ratio.")
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("eval_episodes", 100, "Number of episodes used for evaluation.")
+flags.DEFINE_integer("horizon", 8, "Total time steps in a task")
 flags.DEFINE_integer("log_interval", 1000, "Logging interval.")
 flags.DEFINE_integer("eval_interval", 10000, "Eval interval.")
 flags.DEFINE_integer("batch_size", 256, "Mini batch size.")
-flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
+flags.DEFINE_integer("max_steps",  int(1e5), "Number of training steps.") #10k episodes (as seen in https://arxiv.org/pdf/1908.03568.pdf)
+flags.DEFINE_boolean("discrete_action", True, "Whether env actions are discrete") #True for deep sea`
+flags.DEFINE_boolean("is_deterministic", True, "whether environment is deterministic") #True for deep sea`
 flags.DEFINE_integer(
     "start_training", 5000, "Number of training steps to start training."
-)
+) #might need to change this also later
 
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
 flags.DEFINE_boolean("checkpoint_model", False, "Save agent checkpoint on evaluation.")
 flags.DEFINE_boolean(
     "checkpoint_buffer", False, "Save agent replay buffer on evaluation."
 )
-flags.DEFINE_boolean(
-    "binary_include_bc", True, "Whether to include BC data in the binary datasets."
-)
+# flags.DEFINE_boolean(
+#     "binary_include_bc", True, "Whether to include BC data in the binary datasets."
+# ) #not relevant I guess
 
 flags.DEFINE_integer("utd_ratio", 20, "Update to data ratio.")
-
-flags.DEFINE_string("offline_relabel_type", "gt", "one of [gt/pred/min]")
+flags.DEFINE_string("offline_relabel_type", "pred", "one of [gt/pred/min]") #=pred for explore
 flags.DEFINE_string("exp_prefix", "exp_data/default", "log directory")
-
-flags.DEFINE_boolean("use_rnd_offline", False, "Whether to use rnd offline.")
-flags.DEFINE_boolean("use_rnd_online", False, "Whether to use rnd online.")
-
+flags.DEFINE_boolean("use_rnd_offline", True, "Whether to use rnd offline.") #optimistic rewards for offline data
+flags.DEFINE_boolean("use_rnd_online", False, "Whether to use rnd online.") #no optimism for online data
 flags.DEFINE_float("bc_pretrain_rollin", 0.0, "rollin coeff")
-flags.DEFINE_integer(
-    "bc_pretrain_steps",
-    5000,
-    "Pre-train BC policy for a number of steps on pure offline data",
-)
+flags.DEFINE_string("filter_data_mode", "all", "Strategy to filter offline data") # not sure what this is!
+FLAGS(sys.argv)
 
-flags.DEFINE_integer("reset_rm_every", -1, "Reset the reward network every N env steps")
-
-flags.DEFINE_string("filter_data_mode", "all", "Strategy to filter offline data")
-
+# not changing the parameters for any newtworks for now
 config_flags.DEFINE_config_file(
     "config",
     "configs/rlpd_config.py",
@@ -155,17 +124,9 @@ config_flags.DEFINE_config_file(
     lock_config=False,
 )
 
-config_flags.DEFINE_config_file(
-    "bc_config",
-    "configs/bc_config.py",
-    "File path to the training hyperparameter configuration.",
-    lock_config=False,
-)
-
-
+# helper function for combining dictionaries
 def combine(one_dict, other_dict):
     combined = {}
-
     for k, v in one_dict.items():
         if isinstance(v, dict):
             combined[k] = combine(v, other_dict[k])
@@ -176,23 +137,19 @@ def combine(one_dict, other_dict):
             tmp[0::2] = v
             tmp[1::2] = other_dict[k]
             combined[k] = tmp
-
     return combined
 
-
+# add prefix to dictionary keys
 def add_prefix(prefix, dict):
     return {prefix + k: v for k, v in dict.items()}
-
 
 @partial(jax.jit, static_argnames=("R",))
 def check_overlap(coord, observations, R):
     return jnp.any(jnp.all(jnp.abs(coord - observations[..., :2]) <= R, axis=-1))
 
-
 def view_data_distribution(viz_env, ds):
     vobs = ds.dataset_dict["observations"][..., :2]
     return plot_points(viz_env, vobs[:, 0], vobs[:, 1])
-
 
 def main(_):
     assert FLAGS.offline_ratio <= 1.0
@@ -212,28 +169,27 @@ def main(_):
         os.makedirs(buffer_dir, exist_ok=True)
 
     ########### ENVIRONMENT ###########
-    env = gym.make(FLAGS.env_name)
-    env = wrap_gym(env, rescale_actions=True)
-    env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=1)
-    env.seed(FLAGS.seed)
+    goal_col_dist = jax.tree_util.Partial(
+        lambda key, size: jax.random.randint(key, shape=(), minval=size // 2, maxval=size)
+    )
+    #env, env_params = gymnax.make(FLAGS.env_name)
+    env, env_params = gymnax.make(FLAGS.env_name, size=FLAGS.horizon, goal_column_dist=goal_col_dist)
+    env_params = env.init_env(jax.random.PRNGKey(FLAGS.seed), params=env_params)
 
-    eval_env = gym.make(FLAGS.env_name)
-    eval_env = wrap_gym(eval_env, rescale_actions=True)
-    eval_env.seed(FLAGS.seed + 42)
+    env = wrap_gym(env, env_params=env_params, discrete_action=FLAGS.discrete_action, rescale_actions=True)
+    #env = wrap_gym(env, env_params=env_params, discrete_action=True, rescale_actions=True)
+    env = RecordEpisodeStatistics(env, deque_size=1)
+    # if not FLAGS.is_deterministic:
+    #     env.seed(FLAGS.seed)
+    #eval_env, eval_env_params = gymnax.make(FLAGS.env_name)
+    eval_env, eval_env_params = gymnax.make(FLAGS.env_name, size=FLAGS.horizon, goal_column_dist=goal_col_dist)
+    eval_env_params = eval_env.init_env(jax.random.PRNGKey(FLAGS.seed), params=eval_env_params)
 
-    if "binary" in FLAGS.env_name:
-        ds = BinaryDataset(env, include_bc_data=FLAGS.binary_include_bc)
-    else:
-        ds = D4RLDataset(env)
-
+    eval_env = wrap_gym(eval_env, env_params=eval_env_params, discrete_action=FLAGS.discrete_action, rescale_actions=True)
+    # if not FLAGS.is_deterministic:
+    #     eval_env.seed(FLAGS.seed + 42)
+    ds = DeepSeaDataset(env)
     ds.seed(FLAGS.seed)
-
-    if "antmaze" in FLAGS.env_name:
-        from visualize import get_env_and_dataset
-
-        viz_env, viz_dataset = get_env_and_dataset(FLAGS.env_name)
-        coords, S = viz_env.get_coord_list()
-
     action_space = env.action_space
 
     ds_minr = ds.dataset_dict["rewards"].min()
@@ -250,104 +206,44 @@ def main(_):
     agent = globals()[model_cls].create(
         FLAGS.seed, env.observation_space, action_space, **kwargs
     )
-
-    if FLAGS.use_rnd_offline or FLAGS.use_rnd_online:
-        kwargs = dict(FLAGS.rnd_config)
-        model_cls = kwargs.pop("model_cls")
-        rnd = globals()[model_cls].create(
-            FLAGS.seed + 123, env.observation_space, action_space, **kwargs
-        )
-    else:
-        rnd = None
-
-    if FLAGS.offline_relabel_type == "gt":
-        rm = None
-    else:
-        kwargs = dict(FLAGS.rm_config)
-        model_cls = kwargs.pop("model_cls")
-        rm = globals()[model_cls].create(
-            FLAGS.seed + 123, env.observation_space, action_space, **kwargs
-        )
-
-    if FLAGS.bc_pretrain_rollin > 0.0:
-        kwargs = dict(FLAGS.bc_config)
-        model_cls = kwargs.pop("model_cls")
-        bc_policy = globals()[model_cls].create(
-            FLAGS.seed + 152, env.observation_space, action_space, **kwargs
-        )
-    else:
-        bc_policy = None
-
+    kwargs = dict(FLAGS.rnd_config)
+    model_cls = kwargs.pop("model_cls")
+    rnd = globals()[model_cls].create(
+        FLAGS.seed + 123, env.observation_space, action_space, **kwargs
+    )
+    kwargs = dict(FLAGS.rm_config)
+    model_cls = kwargs.pop("model_cls")
+    rm = globals()[model_cls].create(
+        FLAGS.seed + 123, env.observation_space, action_space, **kwargs
+    )
     # Pre-training
     record_step = 0
-    if bc_policy is not None:
-        for i in tqdm.tqdm(
-            range(FLAGS.bc_pretrain_steps), smoothing=0.1, disable=not FLAGS.tqdm
-        ):
-            record_step += 1
-            batch = ds.sample(int(FLAGS.batch_size * FLAGS.utd_ratio))
-            bc_policy, update_info = bc_policy.update(batch, FLAGS.utd_ratio)
-            if i % FLAGS.log_interval == 0:
-                for k, v in update_info.items():
-                    wandb.log(add_prefix("bc/", {k: v}), step=record_step)
-
-    observation, done = env.reset(), False
+    observation, done = env.reset()[0], False
     online_trajs = []
     online_traj = [observation]
     rng = jax.random.PRNGKey(seed=FLAGS.seed)
-    if FLAGS.bc_pretrain_rollin > 0.0:
-        curr_rng, rng = jax.random.split(rng)
-        rollin_enabled = (
-            True
-            if jax.random.uniform(key=curr_rng) < FLAGS.bc_pretrain_rollin
-            else False
-        )
-    else:
-        rollin_enabled = False
-
+    rollin_enabled = False
     env_step = 0
     for i in tqdm.tqdm(
         range(0, FLAGS.max_steps + 1), smoothing=0.1, disable=not FLAGS.tqdm
     ):
-
-        if (
-            FLAGS.reset_rm_every != -1
-            and i % FLAGS.reset_rm_every == FLAGS.reset_rm_every - 1
-        ):
-            kwargs = dict(FLAGS.rm_config)
-            model_cls = kwargs.pop("model_cls")
-            rm = globals()[model_cls].create(
-                FLAGS.seed + 123, env.observation_space, action_space, **kwargs
-            )
-
         if env_step > FLAGS.max_steps:  # done after max_steps achieved
             break
-
         record_step += 1
-        if rollin_enabled:
-            action, bc_policy = bc_policy.sample_actions(observation)
-            curr_rng, rng = jax.random.split(rng)
-            rollin_enabled = (
-                True if jax.random.uniform(key=curr_rng) <= agent.discount else False
-            )
+        # choose random action before training and agent action during training
+        if i < FLAGS.start_training:
+            action = action_space.sample()
         else:
-            if i < FLAGS.start_training:
-                action = action_space.sample()
-            else:
-                action, agent = agent.sample_actions(observation)
-
-        next_observation, reward, done, info = env.step(action)
+            action, agent = agent.sample_actions(observation)
+        next_observation, reward, done, terminated, info = env.step(action)
         env_step += 1
-
+        # online traj is the list of observations
         online_traj.append(next_observation)
-
         timelimit_stop = "TimeLimit.truncated" in info
-
         if not done or timelimit_stop:
             mask = 1.0
         else:
             mask = 0.0
-
         replay_buffer.insert(
             dict(
                 observations=observation,
@@ -358,7 +254,7 @@ def main(_):
                 next_observations=next_observation,
             )
         )
-
+        # updating the agent network
         if i >= FLAGS.start_training:
             # standard online batch
             online_batch_size = int(
@@ -366,86 +262,45 @@ def main(_):
             )
             online_batch = replay_buffer.sample(online_batch_size)
             online_batch = online_batch.unfreeze()
-            if "antmaze" in FLAGS.env_name:
-                online_batch["rewards"] -= 1
-
-            if FLAGS.use_rnd_online:
-                online_batch["rewards"] += rnd.get_reward(
-                    online_batch["observations"], online_batch["actions"]
-                )
-
             batch = online_batch
             # append offline batch
-            if FLAGS.offline_ratio > 0:
-                offline_batch_size = int(
-                    FLAGS.batch_size * FLAGS.utd_ratio * FLAGS.offline_ratio
-                )
-                offline_batch = ds.sample(offline_batch_size)
-
-                offline_batch = offline_batch.unfreeze()
-
-                if "antmaze" in FLAGS.env_name:
-                    offline_batch["rewards"] -= 1
-
-                if FLAGS.offline_relabel_type == "gt":
-                    pass
-                elif FLAGS.offline_relabel_type == "pred":
-                    offline_batch["rewards"] = rm.get_reward(
-                        offline_batch["observations"], offline_batch["actions"]
-                    )
-                    offline_batch["masks"] = rm.get_mask(
-                        offline_batch["observations"], offline_batch["actions"]
-                    )
-                elif FLAGS.offline_relabel_type == "min":
-                    offline_batch["rewards"][:] = ds_minr
-                    offline_batch["masks"] = rm.get_mask(
-                        offline_batch["observations"], offline_batch["actions"]
-                    )
-                    if "antmaze" in FLAGS.env_name:
-                        offline_batch["rewards"] -= 1
-                else:
-                    raise NotImplementedError
-
-                if FLAGS.use_rnd_offline:
-                    offline_batch["rewards"] = offline_batch[
-                        "rewards"
-                    ] + rnd.get_reward(
-                        offline_batch["observations"], offline_batch["actions"]
-                    )
-
-                # only enable the bc loss on offline data
-                offline_batch["bc_masks"] = jnp.ones_like(offline_batch["masks"])
-                batch["bc_masks"] = jnp.zeros_like(batch["masks"])
-                batch = combine(offline_batch, batch)
-
+            offline_batch_size = int(
+                FLAGS.batch_size * FLAGS.utd_ratio * FLAGS.offline_ratio
+            )
+            offline_batch = ds.sample(offline_batch_size)
+            offline_batch = offline_batch.unfreeze()
+            offline_batch["rewards"] = rm.get_reward(
+                offline_batch["observations"], offline_batch["actions"]
+            )
+            offline_batch["masks"] = rm.get_mask(
+                offline_batch["observations"], offline_batch["actions"]
+            )
+            offline_batch["rewards"] = offline_batch[
+                "rewards"
+            ] + rnd.get_reward(
+                offline_batch["observations"], offline_batch["actions"]
+            )
+            # only enable the bc loss on offline data
+            offline_batch["bc_masks"] = jnp.ones_like(offline_batch["masks"])
+            batch["bc_masks"] = jnp.zeros_like(batch["masks"])
+            batch = combine(offline_batch, batch)
             agent, update_info = agent.update(batch, FLAGS.utd_ratio)
-
             if i % FLAGS.log_interval == 0:
                 for k, v in update_info.items():
                     wandb.log(add_prefix("agent/", {k: v}), step=record_step)
-
                 print(update_info)
-
+        # updating the critic network
         if i >= FLAGS.start_training * 2 and (
             rm is not None or rnd is not None
         ):  # start training.
             online_batch = replay_buffer.sample(int(FLAGS.batch_size * FLAGS.utd_ratio))
             online_batch = online_batch.unfreeze()
-            if "antmaze" in FLAGS.env_name:
-                online_batch["rewards"] -= 1
-
             if rm is not None:
                 rm, rm_update_info = rm.update(online_batch, FLAGS.utd_ratio)
-
             offline_batch = ds.sample(int(FLAGS.batch_size * FLAGS.utd_ratio))
-
             offline_batch = offline_batch.unfreeze()
-            if "antmaze" in FLAGS.env_name:
-                offline_batch["rewards"] -= 1
-
             if rm is not None:
                 rm_update_info.update(rm.evaluate(offline_batch))
-
             if rnd is not None:
                 rnd, rnd_update_info = rnd.update(
                     {
@@ -457,7 +312,6 @@ def main(_):
                         "dones": np.array(done)[None],
                     }
                 )
-
             if i % FLAGS.log_interval == 0:
                 if rm is not None:
                     for k, v in rm_update_info.items():
@@ -465,80 +319,25 @@ def main(_):
                 if rnd is not None:
                     for k, v in rnd_update_info.items():
                         wandb.log(add_prefix("rnd/", {k: v}), step=record_step)
-
         if i % FLAGS.log_interval == 0:
             wandb.log({"env_step": env_step}, step=record_step)
-
         observation = next_observation
-
         if done:
             online_trajs.append({"observation": np.stack(online_traj, axis=0)})
-            observation, done = env.reset(), False
+            observation, done = env.reset()[0], False
             online_traj = [observation]
-            for k, v in info["episode"].items():
-                decode = {"r": "return", "l": "length", "t": "time"}
-                wandb.log(add_prefix("episode/", {decode[k]: v}), step=record_step)
-
-            if FLAGS.bc_pretrain_rollin > 0.0:
-                curr_rng, rng = jax.random.split(rng)
-                rollin_enabled = (
-                    True
-                    if jax.random.uniform(key=curr_rng) < FLAGS.bc_pretrain_rollin
-                    else False
-                )
-
+            # for k, v in info["episode"].items():
+            #     decode = {"r": "return", "l": "length", "t": "time"}
+            #     wandb.log(add_prefix("episode/", {decode[k]: v}), step=record_step)
+        # evaluation to find how good the current policy is
         if i % FLAGS.eval_interval == 0:
-
             eval_info, trajs = evaluate(
                 agent,
                 eval_env,
                 num_episodes=FLAGS.eval_episodes,
             )
-
             for k, v in eval_info.items():
                 wandb.log({f"evaluation/{k}": v}, step=record_step)
-
-            if FLAGS.bc_pretrain_rollin > 0.0:
-                bc_eval_info, bc_trajs = evaluate(
-                    bc_policy,
-                    eval_env,
-                    num_episodes=FLAGS.eval_episodes,
-                )
-                for k, v in bc_eval_info.items():
-                    wandb.log({f"bc-evaluation/{k}": v}, step=record_step)
-
-            if "antmaze" in FLAGS.env_name:
-
-                num_overlapped = 0
-                for (x, y) in coords:
-                    coord = jnp.array([x, y])
-                    overlapped = False
-                    for batch in replay_buffer.get_iter(FLAGS.batch_size):
-                        if check_overlap(coord, batch["observations"], S / 2):
-                            overlapped = True
-                            break
-                    if overlapped:
-                        num_overlapped += 1
-                wandb.log({"coverage": num_overlapped / len(coords)}, step=record_step)
-
-                fig = plt.figure(tight_layout=True, figsize=(4, 4), dpi=200)
-                canvas = FigureCanvas(fig)
-                plot_trajectories(viz_env, viz_dataset, online_trajs, fig, plt.gca())
-                online_trajs = []
-                image = wandb.Image(get_canvas_image(canvas))
-                wandb.log({f"visualize/trajs": image}, step=record_step)
-                plt.close(fig)
-
-                data_distribution_im = view_data_distribution(viz_env, ds)
-                image = wandb.Image(data_distribution_im)
-                wandb.log({f"visualize/offline_data_dist": image}, step=record_step)
-
-                data_directions_im = plot_data_directions(viz_env, ds)
-                image = wandb.Image(data_directions_im)
-                wandb.log(
-                    {f"visualize/offline_data_directions": image}, step=record_step
-                )
-
             if FLAGS.checkpoint_model:
                 try:
                     checkpoints.save_checkpoint(
@@ -546,7 +345,6 @@ def main(_):
                     )
                 except:
                     print("Could not save model checkpoint.")
-
             if FLAGS.checkpoint_buffer:
                 with open(os.path.join(buffer_dir, f"buffer.npz"), "wb") as f:
                     np.savez(
@@ -555,7 +353,6 @@ def main(_):
                             : len(replay_buffer)
                         ],
                     )
-
 
 if __name__ == "__main__":
     app.run(main)

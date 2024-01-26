@@ -39,13 +39,13 @@ def evaluate(agent, env: gym.Env, num_episodes: int) -> Dict[str, float]:
     cum_returns = []
     cum_lengths = []
     for i in range(num_episodes):
-        observation, done = env.reset(), False
+        observation, done = env.reset()[0], False
         traj = [observation]
         cum_return = 0
         cum_length = 0
         while not done:
             action = agent.eval_actions(observation)
-            observation, reward, done, _ = env.step(action)
+            observation, reward, done, _, _ = env.step(action)
             cum_return += reward
             cum_length += 1
             traj.append(observation)

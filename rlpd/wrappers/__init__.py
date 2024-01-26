@@ -28,21 +28,28 @@ SOFTWARE.
 """
 
 import gym
+import gymnax
 from gym.wrappers.flatten_observation import FlattenObservation
+#from gymnax.wrappers.purerl import FlattenObservationWrapper
+from gymnax.wrappers.gym import GymnaxToGymWrapper
 
 from rlpd.wrappers.pixels import wrap_pixels
 from rlpd.wrappers.single_precision import SinglePrecision
 from rlpd.wrappers.universal_seed import UniversalSeed
+from rlpd.wrappers.discrete2continuous import Discrete2Continuous
 
 
-def wrap_gym(env: gym.Env, rescale_actions: bool = True) -> gym.Env:
-    env = SinglePrecision(env)
-    env = UniversalSeed(env)
+def wrap_gym(env, env_params, discrete_action: bool = True, rescale_actions: bool = True) -> gym.Env:
+    env = GymnaxToGymWrapper(env, params=env_params)
+    if discrete_action:
+        env = Discrete2Continuous(env)
+    #env = SinglePrecision(env)
+    #env = UniversalSeed(env)
     if rescale_actions:
         env = gym.wrappers.RescaleAction(env, -1, 1)
 
-    if isinstance(env.observation_space, gym.spaces.Dict):
-        env = FlattenObservation(env)
+    #if isinstance(env.observation_space, gym.spaces.Dict):
+    env = FlattenObservation(env)
 
     env = gym.wrappers.ClipAction(env)
 

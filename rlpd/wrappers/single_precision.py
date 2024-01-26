@@ -30,8 +30,10 @@ SOFTWARE.
 import copy
 
 import gym
+#import gymnax
 import numpy as np
 from gym.spaces import Box, Dict
+#from gymnax.environments.spaces import Box, Dict
 
 
 def _convert_space(obs_space):
