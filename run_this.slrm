@@ -1,0 +1,22 @@
+#!/bin/bash
+
+#SBATCH -A rahul
+#SBATCH -q rahul
+#SBATCH -p rahul
+
+#SBATCH -c 4
+#SBATCH -w voyager
+#SBATCH --mem=8G
+#SBATCH --gres=gpu:1
+#SBATCH --output=dotpy_output-%j.log
+
+. /voyager/projects/vck/jax-activate
+python train_finetuning_deepsea.py \
+    --env_name=DeepSea-bsuite \
+    --max_steps=40000 \
+    --log_interval=400\
+    --eval_interval=400\
+    --eval_episodes=10 \
+    --project_name=deep_sea_gpu_SEED10 \
+    --start_training=500\
+    --seed=10
