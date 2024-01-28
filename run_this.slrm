@@ -20,3 +20,6 @@ python train_finetuning_deepsea.py \
     --project_name=deep_sea_gpu_SEED10 \
     --start_training=500\
     --seed=10
+
+python plotting/wandb_dl.py --entity=wandb-entity-name --domain=deepsea --project_name=deep_sea_gpu_SEED10 
+python plotting/make_plots_deepsea.py
